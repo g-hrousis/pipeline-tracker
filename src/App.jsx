@@ -11,6 +11,7 @@ import {
   saveFitScores, loadFitScores,
 } from './utils/storage.js';
 import { syncAllApplications, detectNewApplications } from './utils/gmail.js';
+import { getGmailToken, requestGmailToken, clearGmailToken, isGmailConnected } from './utils/googleAuth.js';
 import { scoreAllApps } from './utils/fitScoring.js';
 import Header from './components/Header.jsx';
 import UrgentBanner from './components/UrgentBanner.jsx';
@@ -174,6 +175,8 @@ function reducer(state, action) {
     case 'SCORING_START':    return { ...state, isScoring: true };
     case 'SCORING_COMPLETE': return { ...state, isScoring: false };
 
+    case 'SET_GMAIL_CONNECTED': return { ...state, gmailConnected: action.payload };
+
     default:
       return state;
   }
@@ -188,6 +191,7 @@ const initialState = {
   gmailSyncedAt: null,
   lastAutoSync: null,
   isSyncing: false,
+  gmailConnected: isGmailConnected(),
   suggestedApps: [],
   dismissedSuggestions: [],
   resumeText: '',
@@ -243,19 +247,31 @@ export default function App() {
   // ── Gmail Sync ───────────────────────────────────────────────────────────
   const runGmailSync = useCallback(async (isAuto = false) => {
     if (syncInProgress.current) return;
+
+    const token = getGmailToken();
+    if (!token) {
+      if (!isAuto) {
+        dispatch({
+          type: 'ADD_TOAST',
+          payload: { type: 'warning', message: 'Gmail not connected — click "Connect Gmail" in the header' },
+        });
+      }
+      return;
+    }
+
     syncInProgress.current = true;
     dispatch({ type: 'GMAIL_SYNC_START' });
 
     try {
       // 1. Sync existing apps
-      const results = await syncAllApplications(state.applications);
+      const results = await syncAllApplications(state.applications, token);
       dispatch({ type: 'SET_GMAIL_DATA', payload: results });
       const newActivity = results.filter((r) => r.hasNewActivity).length;
 
       // 2. Detect & auto-create new apps
       let newApps = [];
       try {
-        const detected = await detectNewApplications(state.applications);
+        const detected = await detectNewApplications(state.applications, token);
         if (detected.length > 0) {
           dispatch({ type: 'ADD_APPLICATIONS_BULK', payload: detected });
           newApps = detected;
@@ -268,7 +284,10 @@ export default function App() {
             }
           }
         }
-      } catch { /* silent — detection is best-effort */ }
+      } catch (detectionErr) {
+        if (detectionErr.code === 'AUTH_EXPIRED') throw detectionErr;
+        // other detection errors are best-effort silent
+      }
 
       dispatch({ type: 'GMAIL_SYNC_COMPLETE', payload: { isAuto } });
 
@@ -297,10 +316,17 @@ export default function App() {
       }
     } catch (err) {
       dispatch({ type: 'GMAIL_SYNC_COMPLETE', payload: { isAuto } });
-      if (!isAuto) {
+      if (err.code === 'AUTH_EXPIRED') {
+        clearGmailToken();
+        dispatch({ type: 'SET_GMAIL_CONNECTED', payload: false });
         dispatch({
           type: 'ADD_TOAST',
-          payload: { type: 'error', message: 'Gmail sync unavailable — check API key or MCP auth' },
+          payload: { type: 'warning', message: 'Gmail session expired — click "Connect Gmail" to reconnect' },
+        });
+      } else if (!isAuto) {
+        dispatch({
+          type: 'ADD_TOAST',
+          payload: { type: 'error', message: `Gmail sync failed — ${err.message || 'unknown error'}` },
         });
       }
     } finally {
@@ -365,11 +391,34 @@ export default function App() {
 
   const addToast = useCallback((toast) => dispatch({ type: 'ADD_TOAST', payload: toast }), []);
 
+  const connectGmail = useCallback(async () => {
+    try {
+      await requestGmailToken();
+      dispatch({ type: 'SET_GMAIL_CONNECTED', payload: true });
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Gmail connected — syncing now…' } });
+      // Kick off a sync immediately so emails appear right away
+      runGmailSync(false);
+    } catch (err) {
+      dispatch({
+        type: 'ADD_TOAST',
+        payload: { type: 'error', message: err.message || 'Gmail connection failed' },
+      });
+    }
+  }, [runGmailSync]);
+
+  const disconnectGmail = useCallback(() => {
+    clearGmailToken();
+    dispatch({ type: 'SET_GMAIL_CONNECTED', payload: false });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'info', message: 'Gmail disconnected' } });
+  }, []);
+
   const ctx = {
     state,
     dispatch,
     addToast,
     runGmailSync,
+    connectGmail,
+    disconnectGmail,
     handleResumeUpdate,
     rescoreSingleApp,
     showAddModal,

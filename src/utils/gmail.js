@@ -1,178 +1,267 @@
 import { COMPANY_DOMAINS } from '../data/applications.js';
 
+const GMAIL_API         = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const GMAIL_MCP_URL = 'https://gmail.mcp.claude.com/mcp';
 
 function getApiKey() {
   return import.meta.env.VITE_ANTHROPIC_API_KEY || '';
 }
 
-// ── Core: call Claude with Gmail MCP access ────────────────────────────────
+// ── Gmail REST API helpers ────────────────────────────────────────────────
 
-async function callClaudeWithGmail(prompt, maxTokens = 2048) {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('No Anthropic API key configured');
-
-  const res = await fetch(ANTHROPIC_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'mcp-client-2025-04-04',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: maxTokens,
-      mcp_servers: [
-        { type: 'url', url: GMAIL_MCP_URL, name: 'gmail' },
-      ],
-      messages: [{ role: 'user', content: prompt }],
-    }),
+async function gmailGet(path, token) {
+  const res = await fetch(`${GMAIL_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Anthropic API error ${res.status}`);
+  if (res.status === 401) {
+    const err = new Error('Gmail session expired — reconnect Gmail in the header');
+    err.code = 'AUTH_EXPIRED';
+    throw err;
   }
-
-  const data = await res.json();
-  // Get final text content (last text block after any tool use)
-  const textBlocks = (data.content || []).filter((b) => b.type === 'text');
-  return textBlocks[textBlocks.length - 1]?.text || '';
+  if (!res.ok) throw new Error(`Gmail API error ${res.status}`);
+  return res.json();
 }
 
-// ── Sync a single known application ──────────────────────────────────────
+async function searchMessageIds(token, query, maxResults = 50) {
+  const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
+  const data = await gmailGet(`/messages?${params}`, token);
+  return (data.messages || []).map((m) => m.id);
+}
 
-export async function fetchGmailForApp(app) {
+async function getMessageMeta(token, id) {
+  // format=metadata + requested headers gives us Subject/From/Date + snippet
+  const qs = 'format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date';
+  return gmailGet(`/messages/${id}?${qs}`, token);
+}
+
+function headerVal(msg, name) {
+  return (
+    msg.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || ''
+  );
+}
+
+function internalDateToISO(ts) {
+  if (!ts) return new Date().toISOString().split('T')[0];
+  return new Date(parseInt(ts, 10)).toISOString().split('T')[0];
+}
+
+/** Rule-based email type classification — no API cost. */
+function classifyEmailType(subject = '', snippet = '') {
+  const t = (subject + ' ' + snippet).toLowerCase();
+  if (/reject|not moving forward|not selected|unfortunately|other candidates|position.*filled|moved forward with other|will not be moving/.test(t))
+    return 'rejection';
+  if (/offer|congratulations|pleased to offer|we.*like to offer|offer letter|compensation package/.test(t))
+    return 'offer';
+  if (/interview|schedule.*call|schedule.*meet|invited.*speak|virtual.*meeting|speak with our|zoom|teams call|video call|phone screen/.test(t))
+    return 'invite';
+  if (/assessment|take-home|coding challenge|case study|hackerrank|codility|pymetrics|online test|aptitude|skills test/.test(t))
+    return 'assessment';
+  if (/application received|thank you for applying|we received your|application confirmation|successfully submitted|your application for/.test(t))
+    return 'confirmation';
+  if (/^re:|follow.?up|checking in|circling back|following up|just wanted to/.test(t))
+    return 'reply';
+  return 'other';
+}
+
+// ── Per-app Gmail sync ─────────────────────────────────────────────────────
+
+export async function fetchGmailForApp(app, token) {
+  if (!token) return { appId: app.id, threads: [], hasNewActivity: false };
+
   const domains = COMPANY_DOMAINS[app.company];
   if (!domains || domains.length === 0) {
     return { appId: app.id, threads: [], hasNewActivity: false };
   }
 
-  const fromList = domains.map((d) => `from:${d}`).join(' OR ');
-  // Only fetch emails newer than the last known thread to avoid re-fetching everything
-  const existingThreads = app.gmailThreads || [];
-  const existingIds = new Set(existingThreads.map((t) => t.id).filter(Boolean));
-  const afterDate = existingThreads.length > 0
-    ? existingThreads.reduce((latest, t) => t.date > latest ? t.date : latest, '2025-01-01').replace(/-/g, '/')
-    : '2025/1/1';
+  const existing   = app.gmailThreads || [];
+  const existingIds = new Set(existing.map((t) => t.id).filter(Boolean));
 
-  const prompt = `Search Gmail for ALL emails matching: (${fromList}) after:${afterDate}
+  // Incremental: only ask for messages newer than the latest we already have
+  const latestDate = existing
+    .map((t) => t.date || '')
+    .filter(Boolean)
+    .sort()
+    .pop();
+  const afterDate = latestDate ? latestDate.replace(/-/g, '/') : '2025/1/1';
 
-For this job application:
-- Company: ${app.company}
-- Role: ${app.role}
-
-Retrieve every email from this sender — application confirmations, status updates, recruiter messages, interview invites, assessments, rejections, offers, and any other correspondence. Return ALL of them as a JSON array (no limit):
-[{
-  "id": "gmail_message_id",
-  "subject": "email subject",
-  "from": "sender@domain.com",
-  "date": "YYYY-MM-DD",
-  "snippet": "first ~200 chars of email body",
-  "emailType": "reply|invite|assessment|rejection|offer|confirmation|other",
-  "gmailUrl": "https://mail.google.com/mail/u/0/#inbox/MESSAGE_ID"
-}]
-
-Sort by date descending (newest first). Return ONLY the JSON array. If no emails found, return [].`;
+  const fromQuery = domains.map((d) => `from:${d}`).join(' OR ');
+  const query     = `(${fromQuery}) after:${afterDate}`;
 
   try {
-    const text = await callClaudeWithGmail(prompt, 3000);
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return { appId: app.id, threads: [], hasNewActivity: false };
+    const ids    = await searchMessageIds(token, query, 50);
+    const newIds = ids.filter((id) => !existingIds.has(id));
 
-    const threads = JSON.parse(jsonMatch[0]);
-    const hasNewActivity = threads.some((t) => t.id && !existingIds.has(t.id));
+    if (newIds.length === 0) {
+      return { appId: app.id, threads: [], hasNewActivity: false };
+    }
 
-    return { appId: app.id, threads, hasNewActivity };
-  } catch {
+    // Fetch metadata for all new messages (cap at 30 per sync cycle)
+    const fetched = await Promise.allSettled(
+      newIds.slice(0, 30).map((id) => getMessageMeta(token, id))
+    );
+
+    const newThreads = fetched
+      .filter((r) => r.status === 'fulfilled')
+      .map(({ value: msg }) => {
+        const subject = headerVal(msg, 'Subject');
+        const from    = headerVal(msg, 'From');
+        const date    = internalDateToISO(msg.internalDate);
+        const snippet = msg.snippet || '';
+        return {
+          id:        msg.id,
+          subject,
+          from,
+          date,
+          snippet,
+          emailType: classifyEmailType(subject, snippet),
+          gmailUrl:  `https://mail.google.com/mail/u/0/#inbox/${msg.id}`,
+        };
+      });
+
+    return { appId: app.id, threads: newThreads, hasNewActivity: newThreads.length > 0 };
+  } catch (err) {
+    if (err.code === 'AUTH_EXPIRED') throw err;
     return { appId: app.id, threads: [], hasNewActivity: false, error: true };
   }
 }
 
 // ── Sync all known applications ────────────────────────────────────────────
 
-export async function syncAllApplications(applications) {
-  const toSync = applications.filter((a) => a.stage !== 'Closed');
+export async function syncAllApplications(applications, token) {
+  if (!token) return [];
+  const toSync  = applications.filter((a) => a.stage !== 'Closed');
   const results = await Promise.allSettled(
-    toSync.map((app) => fetchGmailForApp(app))
+    toSync.map((app) => fetchGmailForApp(app, token))
   );
   return results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
 }
 
 // ── Auto-detect NEW applications from Gmail ────────────────────────────────
 
-export async function detectNewApplications(existingApps) {
-  const knownCompanies = existingApps
-    .map((a) => a.company.toLowerCase())
-    .join(', ');
+export async function detectNewApplications(existingApps, token) {
+  if (!token) return [];
+  const apiKey = getApiKey();
+  if (!apiKey) return [];
 
-  const prompt = `Search Gmail for job application confirmation emails received in the last 90 days.
+  const knownCompanies = new Set(existingApps.map((a) => a.company.toLowerCase()));
 
-I'm tracking job applications. These companies are ALREADY tracked — skip them:
-${knownCompanies}
+  // Search several subject-line patterns in parallel
+  const queries = [
+    'subject:"thank you for applying" after:2025/10/1',
+    'subject:"application received" after:2025/10/1',
+    'subject:"application confirmation" after:2025/10/1',
+    'subject:"thank you for your application" after:2025/10/1',
+    'subject:"we received your application" after:2025/10/1',
+    'subject:"your application" after:2025/10/1',
+  ];
 
-Search for emails with subjects like:
-- "thank you for applying"
-- "application received" / "application confirmation"
-- "thank you for your application"
-- "we received your application"
-- "complete your application" (incomplete/abandoned applications)
-- "action required" related to job applications
+  try {
+    const idSets = await Promise.allSettled(
+      queries.map((q) => searchMessageIds(token, q, 15))
+    );
+    const allIds = [
+      ...new Set(
+        idSets
+          .filter((r) => r.status === 'fulfilled')
+          .flatMap((r) => r.value)
+      ),
+    ].slice(0, 40);
 
-For each NEW company (not in the skip list above), extract:
+    if (allIds.length === 0) return [];
+
+    // Fetch message metadata
+    const fetched = await Promise.allSettled(
+      allIds.map((id) => getMessageMeta(token, id))
+    );
+    const messages = fetched
+      .filter((r) => r.status === 'fulfilled')
+      .map(({ value: msg }) => ({
+        subject: headerVal(msg, 'Subject'),
+        from:    headerVal(msg, 'From'),
+        date:    internalDateToISO(msg.internalDate),
+        snippet: msg.snippet || '',
+      }));
+
+    if (messages.length === 0) return [];
+
+    // Ask Claude (no MCP, no Gmail tool) to extract company/role from the snippets
+    const prompt = `You are extracting job application data from email metadata.
+
+These are confirmation emails from job applications. Extract the company and role from each:
+
+${messages.map((m, i) =>
+  `${i + 1}. From: ${m.from}\n   Subject: ${m.subject}\n   Date: ${m.date}\n   Snippet: ${m.snippet}`
+).join('\n\n')}
+
+SKIP emails from these already-tracked companies (case-insensitive): ${[...knownCompanies].join(', ')}
+
+For each genuinely new job application (not spam, not a newsletter), extract:
 [{
   "company": "Company Name",
-  "role": "Exact Job Title from email",
-  "status": "Applied|Incomplete|Under Review",
+  "role": "Job Title",
   "appliedAt": "YYYY-MM-DD",
   "emailFrom": "sender@domain.com",
   "emailSubject": "subject line",
-  "snippet": "key detail from email body",
+  "snippet": "key detail",
   "priority": "HIGH|MEDIUM|LOW",
   "isIncomplete": false
 }]
 
-Priority guide: HIGH = top consulting/finance/tech firms, MEDIUM = mid-tier, LOW = others.
-Set isIncomplete = true if the email says the application was started but not finished.
+Priority: HIGH = top consulting/finance/tech (McKinsey, BCG, Goldman, etc.), MEDIUM = mid-tier, LOW = others.
+isIncomplete = true if the email says the application was started but not submitted.
 
-Return ONLY the JSON array. If nothing new found, return [].`;
+Return ONLY the JSON array. Empty array [] if nothing new.`;
 
-  try {
-    const text = await callClaudeWithGmail(prompt, 3000);
+    const res = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-haiku-4-20250514',
+        max_tokens: 2000,
+        messages:   [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
 
     const found = JSON.parse(jsonMatch[0]);
-    const knownSet = new Set(existingApps.map((a) => a.company.toLowerCase()));
 
     return found
-      .filter((f) => f.company && !knownSet.has(f.company.toLowerCase()))
+      .filter((f) => f.company && !knownCompanies.has(f.company.toLowerCase()))
       .map((f, i) => ({
-        id: `auto-${Date.now()}-${i}`,
-        company: f.company,
-        role: f.role || 'Unknown Role',
-        stage: f.isIncomplete ? 'Targeting' : 'Applied',
-        priority: f.priority || 'MEDIUM',
-        status: f.isIncomplete ? 'Incomplete' : (f.status || 'Under Review'),
-        deadline: null,
-        appliedAt: f.appliedAt || new Date().toISOString().split('T')[0],
+        id:             `auto-${Date.now()}-${i}`,
+        company:        f.company,
+        role:           f.role || 'Unknown Role',
+        stage:          f.isIncomplete ? 'Targeting' : 'Applied',
+        priority:       f.priority || 'MEDIUM',
+        status:         f.isIncomplete ? 'Incomplete' : 'Under Review',
+        deadline:       null,
+        appliedAt:      f.appliedAt || new Date().toISOString().split('T')[0],
         stageEnteredAt: f.appliedAt || new Date().toISOString().split('T')[0],
-        contacts: [],
+        contacts:       [],
         timeline: [{
           date: f.appliedAt || new Date().toISOString().split('T')[0],
           type: f.isIncomplete ? 'note' : 'applied',
-          note: `Auto-detected via Gmail scan — ${f.snippet || f.emailSubject || 'email received'}`,
+          note: `Auto-detected via Gmail — ${f.snippet || f.emailSubject || ''}`,
         }],
-        notes: `Auto-detected from Gmail. From: ${f.emailFrom || 'unknown'}. Subject: "${f.emailSubject || ''}"`,
-        documents: [],
-        gmailThreads: [],
+        notes:          `Auto-detected from Gmail. From: ${f.emailFrom || ''}. Subject: "${f.emailSubject || ''}"`,
+        documents:      [],
+        gmailThreads:   [],
         hasNewActivity: true,
-        source: 'gmail-detected',
+        source:         'gmail-detected',
         jobDescription: '',
       }));
-  } catch {
+  } catch (err) {
+    if (err.code === 'AUTH_EXPIRED') throw err;
     return [];
   }
 }

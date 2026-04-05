@@ -17,8 +17,8 @@ function timeSince(isoString) {
 }
 
 export default function Header() {
-  const { state, dispatch, runGmailSync, setShowResumeModal } = useApp();
-  const { applications, view, isSyncing, gmailSyncedAt, resumeText, isScoring } = state;
+  const { state, dispatch, runGmailSync, connectGmail, disconnectGmail, setShowResumeModal } = useApp();
+  const { applications, view, isSyncing, gmailSyncedAt, resumeText, isScoring, gmailConnected } = state;
 
   const active = applications.filter((a) => a.stage !== 'Closed');
   const grade = computeHealthGrade(active);
@@ -66,22 +66,35 @@ export default function Header() {
         )}
       </button>
 
-      <button
-        className="sync-btn"
-        onClick={() => runGmailSync(false)}
-        disabled={isSyncing}
-        title="Sync Gmail"
-      >
-        {isSyncing ? (
-          <span className="sync-btn__spinner" />
-        ) : (
-          <span>⟳</span>
-        )}
-        {isSyncing ? 'Syncing…' : 'Sync Gmail'}
-      </button>
-
-      {syncLabel && (
-        <span className="sync-timestamp">Synced {syncLabel}</span>
+      {gmailConnected ? (
+        <>
+          <button
+            className="sync-btn sync-btn--connected"
+            onClick={() => runGmailSync(false)}
+            disabled={isSyncing}
+            title="Sync Gmail"
+          >
+            {isSyncing ? <span className="sync-btn__spinner" /> : <span>⟳</span>}
+            {isSyncing ? 'Syncing…' : 'Sync Gmail'}
+          </button>
+          <button
+            className="gmail-disconnect-btn"
+            onClick={disconnectGmail}
+            title="Disconnect Gmail"
+          >
+            ✓ Gmail
+          </button>
+          {syncLabel && <span className="sync-timestamp">Synced {syncLabel}</span>}
+        </>
+      ) : (
+        <button
+          className="connect-gmail-btn"
+          onClick={connectGmail}
+          title="Connect Gmail to pull in emails for each application"
+        >
+          <span className="connect-gmail-btn__icon">✉</span>
+          Connect Gmail
+        </button>
       )}
 
       <div className="view-toggle">
