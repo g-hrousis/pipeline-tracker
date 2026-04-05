@@ -51,32 +51,38 @@ export async function fetchGmailForApp(app) {
   }
 
   const fromList = domains.map((d) => `from:${d}`).join(' OR ');
-  const prompt = `Search Gmail for emails matching: (${fromList}) after:2026/2/1
+  // Only fetch emails newer than the last known thread to avoid re-fetching everything
+  const existingThreads = app.gmailThreads || [];
+  const existingIds = new Set(existingThreads.map((t) => t.id).filter(Boolean));
+  const afterDate = existingThreads.length > 0
+    ? existingThreads.reduce((latest, t) => t.date > latest ? t.date : latest, '2025-01-01').replace(/-/g, '/')
+    : '2025/1/1';
+
+  const prompt = `Search Gmail for ALL emails matching: (${fromList}) after:${afterDate}
 
 For this job application:
 - Company: ${app.company}
 - Role: ${app.role}
 
-Find the most recent relevant emails and return a JSON array (max 5 emails):
+Retrieve every email from this sender — application confirmations, status updates, recruiter messages, interview invites, assessments, rejections, offers, and any other correspondence. Return ALL of them as a JSON array (no limit):
 [{
   "id": "gmail_message_id",
   "subject": "email subject",
   "from": "sender@domain.com",
   "date": "YYYY-MM-DD",
-  "snippet": "first ~150 chars of email body",
-  "emailType": "reply|invite|assessment|rejection|offer|other",
+  "snippet": "first ~200 chars of email body",
+  "emailType": "reply|invite|assessment|rejection|offer|confirmation|other",
   "gmailUrl": "https://mail.google.com/mail/u/0/#inbox/MESSAGE_ID"
 }]
 
-Return ONLY the JSON array. If no emails found, return [].`;
+Sort by date descending (newest first). Return ONLY the JSON array. If no emails found, return [].`;
 
   try {
-    const text = await callClaudeWithGmail(prompt);
+    const text = await callClaudeWithGmail(prompt, 3000);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return { appId: app.id, threads: [], hasNewActivity: false };
 
     const threads = JSON.parse(jsonMatch[0]);
-    const existingIds = new Set((app.gmailThreads || []).map((t) => t.id));
     const hasNewActivity = threads.some((t) => t.id && !existingIds.has(t.id));
 
     return { appId: app.id, threads, hasNewActivity };

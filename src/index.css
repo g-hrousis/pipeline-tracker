@@ -1036,6 +1036,13 @@ select option { background: var(--card); }
 
 /* Gmail threads */
 .gmail-thread-list { display: flex; flex-direction: column; gap: 8px; }
+.gmail-thread-list--all {
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  padding-right: 4px;
+}
 
 .gmail-thread {
   background: var(--bg-secondary);

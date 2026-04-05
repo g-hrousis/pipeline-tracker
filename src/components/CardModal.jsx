@@ -143,7 +143,9 @@ export default function CardModal({ app }) {
     (a, b) => new Date(b.date) - new Date(a.date)
   );
 
-  const recentEmails = (app.gmailThreads || []).slice(0, 3);
+  const allEmails = (app.gmailThreads || []).slice().sort(
+    (a, b) => new Date(b.date || 0) - new Date(a.date || 0)
+  );
 
   return (
     <div
@@ -254,10 +256,17 @@ export default function CardModal({ app }) {
 
           {/* Gmail Emails */}
           <div className="modal__section">
-            <div className="modal__section-title">Recent Gmail Activity</div>
-            {recentEmails.length > 0 ? (
-              <div className="gmail-thread-list">
-                {recentEmails.map((email, i) => (
+            <div className="modal__section-title">
+              Gmail Correspondence
+              {allEmails.length > 0 && (
+                <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>
+                  {allEmails.length} email{allEmails.length !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            {allEmails.length > 0 ? (
+              <div className="gmail-thread-list gmail-thread-list--all">
+                {allEmails.map((email, i) => (
                   <div key={email.id || i} className="gmail-thread">
                     <div className="gmail-thread__top">
                       <div className="gmail-thread__subject">{email.subject || '(No subject)'}</div>
@@ -290,7 +299,7 @@ export default function CardModal({ app }) {
               </div>
             ) : (
               <div className="gmail-empty">
-                No emails synced yet. Click "Sync Gmail" in the header.
+                No emails synced yet — click "Sync Gmail" in the header to pull in all correspondence for this application.
               </div>
             )}
           </div>

@@ -122,9 +122,17 @@ function reducer(state, action) {
       const apps = state.applications.map((a) => {
         const match = results.find((r) => r.appId === a.id);
         if (!match) return a;
+        // Merge incoming threads with existing — deduplicate by id, newest first
+        const existing = a.gmailThreads || [];
+        const incoming = match.threads || [];
+        const existingIds = new Set(existing.map((t) => t.id).filter(Boolean));
+        const merged = [
+          ...incoming.filter((t) => t.id && !existingIds.has(t.id)),
+          ...existing,
+        ].sort((x, y) => new Date(y.date || 0) - new Date(x.date || 0));
         return {
           ...a,
-          gmailThreads: match.threads,
+          gmailThreads: merged,
           hasNewActivity: a.hasNewActivity || match.hasNewActivity,
         };
       });
