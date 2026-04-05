@@ -6,8 +6,12 @@ import {
   saveAutoSyncTimestamp, loadAutoSyncTimestamp,
   saveSuggestedApps, loadSuggestedApps,
   saveDismissedSuggestions, loadDismissedSuggestions,
+  saveResumeText, loadResumeText,
+  saveResumeName, loadResumeName,
+  saveFitScores, loadFitScores,
 } from './utils/storage.js';
 import { syncAllApplications, detectNewApplications } from './utils/gmail.js';
+import { scoreAllApps } from './utils/fitScoring.js';
 import Header from './components/Header.jsx';
 import UrgentBanner from './components/UrgentBanner.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
@@ -15,6 +19,7 @@ import ListView from './components/ListView.jsx';
 import Analytics from './components/Analytics.jsx';
 import CardModal from './components/CardModal.jsx';
 import AddModal from './components/AddModal.jsx';
+import ResumeModal from './components/ResumeModal.jsx';
 import Toast from './components/Toast.jsx';
 import SuggestionBar from './components/SuggestionBar.jsx';
 
@@ -47,9 +52,20 @@ function reducer(state, action) {
         documents: [],
         gmailThreads: [],
         hasNewActivity: false,
+        jobDescription: '',
+        source: 'manual',
         ...action.payload,
       };
       return { ...state, applications: [...state.applications, newApp] };
+    }
+
+    case 'ADD_APPLICATIONS_BULK': {
+      // Auto-detected apps from Gmail — prepend so they appear first
+      const existingIds = new Set(state.applications.map((a) => a.company.toLowerCase()));
+      const fresh = action.payload.filter(
+        (a) => !existingIds.has(a.company.toLowerCase())
+      );
+      return { ...state, applications: [...fresh, ...state.applications] };
     }
 
     case 'UPDATE_APPLICATION': {
@@ -67,43 +83,31 @@ function reducer(state, action) {
           ...a,
           stage,
           stageEnteredAt: TODAY,
-          timeline: [
-            ...a.timeline,
-            { date: TODAY, type: 'stage-change', note: `Moved to ${stage}` },
-          ],
+          timeline: [...a.timeline, { date: TODAY, type: 'stage-change', note: `Moved to ${stage}` }],
         };
       });
       return { ...state, applications: apps };
     }
 
-    case 'SET_VIEW':
-      return { ...state, view: action.payload };
-
-    case 'TOGGLE_SHOW_CLOSED':
-      return { ...state, showClosed: !state.showClosed };
+    case 'SET_VIEW':       return { ...state, view: action.payload };
+    case 'TOGGLE_SHOW_CLOSED': return { ...state, showClosed: !state.showClosed };
 
     case 'SELECT_APP': {
-      // Clear hasNewActivity when opening modal
       const apps = state.applications.map((a) =>
         a.id === action.payload ? { ...a, hasNewActivity: false } : a
       );
       return { ...state, selectedAppId: action.payload, applications: apps };
     }
-
-    case 'DESELECT_APP':
-      return { ...state, selectedAppId: null };
+    case 'DESELECT_APP':  return { ...state, selectedAppId: null };
 
     case 'ADD_TOAST': {
       const toast = { id: Date.now(), ...action.payload };
       return { ...state, toasts: [...state.toasts, toast] };
     }
-
     case 'REMOVE_TOAST':
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.payload) };
 
-    case 'GMAIL_SYNC_START':
-      return { ...state, isSyncing: true };
-
+    case 'GMAIL_SYNC_START':    return { ...state, isSyncing: true };
     case 'GMAIL_SYNC_COMPLETE': {
       const ts = new Date().toISOString();
       return {
@@ -113,9 +117,8 @@ function reducer(state, action) {
         ...(action.payload?.isAuto ? { lastAutoSync: ts } : {}),
       };
     }
-
     case 'SET_GMAIL_DATA': {
-      const results = action.payload; // [{appId, threads, hasNewActivity}]
+      const results = action.payload;
       const apps = state.applications.map((a) => {
         const match = results.find((r) => r.appId === a.id);
         if (!match) return a;
@@ -128,13 +131,11 @@ function reducer(state, action) {
       return { ...state, applications: apps };
     }
 
-    case 'SET_SUGGESTED_APPS':
-      return { ...state, suggestedApps: action.payload };
-
+    case 'SET_SUGGESTED_APPS':  return { ...state, suggestedApps: action.payload };
     case 'ACCEPT_SUGGESTION': {
       const suggestion = state.suggestedApps.find((s) => s.id === action.payload);
       if (!suggestion) return state;
-      const newApp = { ...suggestion, id: generateId(), source: 'gmail-detected' };
+      const newApp = { ...suggestion, id: generateId() };
       return {
         ...state,
         applications: [...state.applications, newApp],
@@ -142,13 +143,28 @@ function reducer(state, action) {
         dismissedSuggestions: [...state.dismissedSuggestions, action.payload],
       };
     }
-
     case 'DISMISS_SUGGESTION':
       return {
         ...state,
         suggestedApps: state.suggestedApps.filter((s) => s.id !== action.payload),
         dismissedSuggestions: [...state.dismissedSuggestions, action.payload],
       };
+
+    // ── Resume & Fit Scoring ────────────────────────────────────────────────
+    case 'SET_RESUME':
+      return { ...state, resumeText: action.payload.text, resumeName: action.payload.name };
+
+    case 'SET_FIT_SCORES':
+      return { ...state, fitScores: { ...state.fitScores, ...action.payload } };
+
+    case 'SET_FIT_SCORE':
+      return {
+        ...state,
+        fitScores: { ...state.fitScores, [action.payload.appId]: action.payload.result },
+      };
+
+    case 'SCORING_START':    return { ...state, isScoring: true };
+    case 'SCORING_COMPLETE': return { ...state, isScoring: false };
 
     default:
       return state;
@@ -166,21 +182,29 @@ const initialState = {
   isSyncing: false,
   suggestedApps: [],
   dismissedSuggestions: [],
-  showAddModal: false,
+  resumeText: '',
+  resumeName: '',
+  fitScores: {},
+  isScoring: false,
 };
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showResumeModal, setShowResumeModal] = useState(false);
   const syncInProgress = useRef(false);
+  const scoreInProgress = useRef(false);
 
-  // Hydrate from localStorage on mount
+  // ── Hydrate ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    const apps = loadApplications();
-    const syncedAt = loadSyncTimestamp();
-    const autoSync = loadAutoSyncTimestamp();
-    const suggested = loadSuggestedApps();
-    const dismissed = loadDismissedSuggestions();
+    const apps       = loadApplications();
+    const syncedAt   = loadSyncTimestamp();
+    const autoSync   = loadAutoSyncTimestamp();
+    const suggested  = loadSuggestedApps();
+    const dismissed  = loadDismissedSuggestions();
+    const resumeText = loadResumeText();
+    const resumeName = loadResumeName();
+    const fitScores  = loadFitScores();
     dispatch({
       type: 'HYDRATE',
       payload: {
@@ -189,101 +213,139 @@ export default function App() {
         lastAutoSync: autoSync,
         suggestedApps: suggested || [],
         dismissedSuggestions: dismissed || [],
+        resumeText,
+        resumeName,
+        fitScores,
       },
     });
   }, []);
 
-  // Persist applications on change
+  // ── Persist ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (state.applications.length > 0) {
-      saveApplications(state.applications);
-    }
+    if (state.applications.length > 0) saveApplications(state.applications);
   }, [state.applications]);
 
-  // Persist suggested apps
-  useEffect(() => {
-    saveSuggestedApps(state.suggestedApps);
-  }, [state.suggestedApps]);
+  useEffect(() => { saveSuggestedApps(state.suggestedApps); }, [state.suggestedApps]);
+  useEffect(() => { saveDismissedSuggestions(state.dismissedSuggestions); }, [state.dismissedSuggestions]);
+  useEffect(() => { if (state.gmailSyncedAt) saveSyncTimestamp(state.gmailSyncedAt); }, [state.gmailSyncedAt]);
+  useEffect(() => { if (state.lastAutoSync) saveAutoSyncTimestamp(state.lastAutoSync); }, [state.lastAutoSync]);
+  useEffect(() => { saveResumeText(state.resumeText); saveResumeName(state.resumeName); }, [state.resumeText, state.resumeName]);
+  useEffect(() => { saveFitScores(state.fitScores); }, [state.fitScores]);
 
-  // Persist dismissed
-  useEffect(() => {
-    saveDismissedSuggestions(state.dismissedSuggestions);
-  }, [state.dismissedSuggestions]);
-
-  // Persist sync timestamps
-  useEffect(() => {
-    if (state.gmailSyncedAt) saveSyncTimestamp(state.gmailSyncedAt);
-  }, [state.gmailSyncedAt]);
-  useEffect(() => {
-    if (state.lastAutoSync) saveAutoSyncTimestamp(state.lastAutoSync);
-  }, [state.lastAutoSync]);
-
+  // ── Gmail Sync ───────────────────────────────────────────────────────────
   const runGmailSync = useCallback(async (isAuto = false) => {
     if (syncInProgress.current) return;
     syncInProgress.current = true;
     dispatch({ type: 'GMAIL_SYNC_START' });
 
     try {
+      // 1. Sync existing apps
       const results = await syncAllApplications(state.applications);
       dispatch({ type: 'SET_GMAIL_DATA', payload: results });
+      const newActivity = results.filter((r) => r.hasNewActivity).length;
 
-      const newActivityCount = results.filter((r) => r.hasNewActivity).length;
-
-      // Detect new applications from Gmail
+      // 2. Detect & auto-create new apps
+      let newApps = [];
       try {
-        const suggestions = await detectNewApplications(state.applications);
-        const fresh = suggestions.filter(
-          (s) => !state.dismissedSuggestions.includes(s.id)
-        );
-        if (fresh.length > 0) {
-          dispatch({ type: 'SET_SUGGESTED_APPS', payload: fresh });
+        const detected = await detectNewApplications(state.applications);
+        if (detected.length > 0) {
+          dispatch({ type: 'ADD_APPLICATIONS_BULK', payload: detected });
+          newApps = detected;
+
+          // Auto-score fit for new apps if resume is available
+          if (state.resumeText) {
+            const scores = await scoreAllApps(detected, state.resumeText);
+            if (Object.keys(scores).length > 0) {
+              dispatch({ type: 'SET_FIT_SCORES', payload: scores });
+            }
+          }
         }
-      } catch {
-        // silent
-      }
+      } catch { /* silent — detection is best-effort */ }
 
       dispatch({ type: 'GMAIL_SYNC_COMPLETE', payload: { isAuto } });
 
       if (!isAuto) {
-        if (newActivityCount > 0) {
-          dispatch({
-            type: 'ADD_TOAST',
-            payload: {
-              type: 'success',
-              message: `Gmail synced — ${newActivityCount} new activit${newActivityCount === 1 ? 'y' : 'ies'} detected`,
-            },
-          });
-        } else {
-          dispatch({
-            type: 'ADD_TOAST',
-            payload: { type: 'info', message: 'Gmail synced — no new activity' },
-          });
-        }
+        const parts = [];
+        if (newApps.length > 0)
+          parts.push(`${newApps.length} new app${newApps.length > 1 ? 's' : ''} added: ${newApps.map((a) => a.company).join(', ')}`);
+        if (newActivity > 0)
+          parts.push(`${newActivity} update${newActivity > 1 ? 's' : ''} on existing apps`);
+
+        dispatch({
+          type: 'ADD_TOAST',
+          payload: {
+            type: parts.length > 0 ? 'success' : 'info',
+            message: parts.length > 0 ? parts.join(' · ') : 'Gmail synced — no new activity',
+          },
+        });
+      } else if (newApps.length > 0) {
+        dispatch({
+          type: 'ADD_TOAST',
+          payload: {
+            type: 'success',
+            message: `${newApps.length} new application${newApps.length > 1 ? 's' : ''} auto-detected: ${newApps.slice(0, 3).map((a) => a.company).join(', ')}`,
+          },
+        });
       }
     } catch (err) {
       dispatch({ type: 'GMAIL_SYNC_COMPLETE', payload: { isAuto } });
       if (!isAuto) {
         dispatch({
           type: 'ADD_TOAST',
-          payload: { type: 'error', message: 'Gmail sync unavailable — ensure MCP server is running' },
+          payload: { type: 'error', message: 'Gmail sync unavailable — check API key or MCP auth' },
         });
       }
     } finally {
       syncInProgress.current = false;
     }
-  }, [state.applications, state.dismissedSuggestions]);
+  }, [state.applications, state.resumeText]);
 
-  // Auto-sync on mount (after 3s delay)
+  // Auto-sync on mount (3s delay) + every 5 minutes
   useEffect(() => {
     const t = setTimeout(() => runGmailSync(true), 3000);
     return () => clearTimeout(t);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line
 
-  // Auto-sync every 5 minutes
   useEffect(() => {
     const id = setInterval(() => runGmailSync(true), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [runGmailSync]);
+
+  // ── Resume & Fit Scoring ─────────────────────────────────────────────────
+  const handleResumeUpdate = useCallback(async (text, name) => {
+    dispatch({ type: 'SET_RESUME', payload: { text, name } });
+
+    if (!text.trim()) return;
+    if (scoreInProgress.current) return;
+    scoreInProgress.current = true;
+    dispatch({ type: 'SCORING_START' });
+
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'info', message: 'Scoring resume fit for all applications…' } });
+
+    try {
+      const scores = await scoreAllApps(state.applications, text);
+      dispatch({ type: 'SET_FIT_SCORES', payload: scores });
+      const count = Object.keys(scores).length;
+      dispatch({
+        type: 'ADD_TOAST',
+        payload: { type: 'success', message: `Fit scores updated for ${count} application${count !== 1 ? 's' : ''}` },
+      });
+    } catch {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: 'Fit scoring failed — check API key' } });
+    } finally {
+      dispatch({ type: 'SCORING_COMPLETE' });
+      scoreInProgress.current = false;
+    }
+  }, [state.applications]);
+
+  const rescoreSingleApp = useCallback(async (appId, jobDescription = '') => {
+    const app = state.applications.find((a) => a.id === appId);
+    if (!app || !state.resumeText) return;
+
+    const { scoreFit } = await import('./utils/fitScoring.js');
+    const result = await scoreFit(app, state.resumeText, jobDescription);
+    if (result) dispatch({ type: 'SET_FIT_SCORE', payload: { appId, result } });
+  }, [state.applications, state.resumeText]);
 
   const urgentApps = state.applications.filter((a) => {
     if (!a.deadline) return false;
@@ -295,7 +357,18 @@ export default function App() {
 
   const addToast = useCallback((toast) => dispatch({ type: 'ADD_TOAST', payload: toast }), []);
 
-  const ctx = { state, dispatch, addToast, runGmailSync, showAddModal, setShowAddModal };
+  const ctx = {
+    state,
+    dispatch,
+    addToast,
+    runGmailSync,
+    handleResumeUpdate,
+    rescoreSingleApp,
+    showAddModal,
+    setShowAddModal,
+    showResumeModal,
+    setShowResumeModal,
+  };
 
   return (
     <AppContext.Provider value={ctx}>
@@ -303,15 +376,15 @@ export default function App() {
       {urgentApps.length > 0 && <UrgentBanner apps={urgentApps} />}
       {state.suggestedApps.length > 0 && <SuggestionBar />}
       <main className="app-main">
-        {state.view === 'kanban' && <KanbanBoard />}
-        {state.view === 'list' && <ListView />}
+        {state.view === 'kanban'    && <KanbanBoard />}
+        {state.view === 'list'      && <ListView />}
         {state.view === 'analytics' && <Analytics />}
       </main>
       <button className="fab" onClick={() => setShowAddModal(true)} title="Add Application">+</button>
-      {selectedApp && <CardModal app={selectedApp} />}
-      {showAddModal && <AddModal onClose={() => setShowAddModal(false)} />}
+      {selectedApp    && <CardModal app={selectedApp} />}
+      {showAddModal   && <AddModal onClose={() => setShowAddModal(false)} />}
+      {showResumeModal && <ResumeModal onClose={() => setShowResumeModal(false)} />}
       <Toast />
     </AppContext.Provider>
   );
 }
-

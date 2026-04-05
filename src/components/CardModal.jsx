@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { STAGES } from '../data/applications.js';
 import { computeCommScore, getScoreColor, getDaysInStage, getNextAction } from '../utils/scoring.js';
+import { getFitScoreColor } from '../utils/fitScoring.js';
 
 const TIMELINE_ICONS = {
   applied: '📝',
@@ -36,11 +37,15 @@ function getInitials(company) {
 }
 
 export default function CardModal({ app }) {
-  const { dispatch, addToast } = useApp();
+  const { dispatch, addToast, rescoreSingleApp, state } = useApp();
+  const fitScore = state.fitScores?.[app.id];
   const [notes, setNotes] = useState(app.notes || '');
   const [contacts, setContacts] = useState(app.contacts || []);
+  const [jobDescription, setJobDescription] = useState(app.jobDescription || '');
   const [showSaved, setShowSaved] = useState(false);
+  const [isRescoring, setIsRescoring] = useState(false);
   const notesTimer = useRef(null);
+  const jdTimer = useRef(null);
   const closeRef = useRef(null);
 
   // Focus trap
@@ -63,6 +68,7 @@ export default function CardModal({ app }) {
   useEffect(() => {
     setNotes(app.notes || '');
     setContacts(app.contacts || []);
+    setJobDescription(app.jobDescription || '');
   }, [app.id]);
 
   const { score, breakdown } = computeCommScore(app);
@@ -101,6 +107,31 @@ export default function CardModal({ app }) {
 
   function updateContact(id, field, value) {
     saveContacts(contacts.map((c) => c.id === id ? { ...c, [field]: value } : c));
+  }
+
+  function handleJdChange(e) {
+    const val = e.target.value;
+    setJobDescription(val);
+    clearTimeout(jdTimer.current);
+    jdTimer.current = setTimeout(() => {
+      dispatch({ type: 'UPDATE_APPLICATION', payload: { id: app.id, updates: { jobDescription: val } } });
+    }, 600);
+  }
+
+  async function handleRescore() {
+    if (!state.resumeText) {
+      addToast({ type: 'warning', message: 'Upload a resume first — click "Resume" in the header' });
+      return;
+    }
+    setIsRescoring(true);
+    try {
+      await rescoreSingleApp(app.id, jobDescription);
+      addToast({ type: 'success', message: `Fit score updated for ${app.company}` });
+    } catch {
+      addToast({ type: 'error', message: 'Fit scoring failed — check API key' });
+    } finally {
+      setIsRescoring(false);
+    }
   }
 
   function handleStageChange(e) {
@@ -280,6 +311,81 @@ export default function CardModal({ app }) {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Resume Fit Score */}
+          <div className="modal__section">
+            <div className="modal__section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              Resume Fit
+              {fitScore && (
+                <span className={`fit-score-badge fit-score-badge--${getFitScoreColor(fitScore.score)}`}>
+                  ★ {fitScore.score}/10
+                </span>
+              )}
+              {fitScore?.usedJD && (
+                <span style={{ fontSize: 9, color: 'var(--blue)', fontWeight: 600, letterSpacing: '0.05em' }}>WITH JD</span>
+              )}
+            </div>
+
+            {fitScore ? (
+              <div className="fit-score-section">
+                <div className="fit-score-summary">{fitScore.summary}</div>
+                <div className="fit-score-columns">
+                  <div>
+                    <div className="fit-score-col-label fit-score-col-label--green">Strengths</div>
+                    <ul className="fit-score-list">
+                      {fitScore.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="fit-score-col-label fit-score-col-label--red">Gaps</div>
+                    <ul className="fit-score-list fit-score-list--gaps">
+                      {fitScore.gaps.map((g, i) => <li key={i}>{g}</li>)}
+                    </ul>
+                  </div>
+                </div>
+                {fitScore.recommendation && (
+                  <div className="fit-score-recommendation">{fitScore.recommendation}</div>
+                )}
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>
+                  Scored {new Date(fitScore.scoredAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+            ) : (
+              <div className="fit-score-empty">
+                {state.resumeText
+                  ? 'No score yet — click Rescore below or wait for background scoring'
+                  : 'Upload a resume via the Resume button in the header to enable fit scoring'}
+              </div>
+            )}
+
+            {/* Job Description */}
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                Job Description <span style={{ fontWeight: 400, textTransform: 'none' }}>(optional — improves scoring accuracy)</span>
+              </div>
+              <textarea
+                className="notes-area"
+                style={{ minHeight: 80, fontSize: 11 }}
+                value={jobDescription}
+                onChange={handleJdChange}
+                placeholder="Paste the job description here for more accurate fit scoring…"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+
+            <button
+              className="rescore-btn"
+              onClick={handleRescore}
+              disabled={isRescoring || !state.resumeText}
+              title={!state.resumeText ? 'Upload a resume first' : 'Re-run fit scoring for this application'}
+            >
+              {isRescoring ? (
+                <><span className="sync-btn__spinner" /> Scoring…</>
+              ) : (
+                fitScore ? '↻ Rescore' : '★ Score Fit'
+              )}
+            </button>
           </div>
 
           {/* Notes */}

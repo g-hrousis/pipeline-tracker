@@ -3,6 +3,9 @@ const KEY_SYNC = 'pipeline_gmail_synced_at';
 const KEY_AUTO_SYNC = 'pipeline_gmail_auto_synced_at';
 const KEY_SUGGESTED = 'pipeline_suggested_apps';
 const KEY_DISMISSED = 'pipeline_dismissed_suggestions';
+const KEY_RESUME_TEXT = 'pipeline_resume_text';
+const KEY_RESUME_NAME = 'pipeline_resume_name';
+const KEY_FIT_SCORES = 'pipeline_fit_scores';
 
 export function saveApplications(apps) {
   try {
@@ -81,4 +84,26 @@ export function loadDismissedSuggestions() {
   } catch (e) {
     return [];
   }
+}
+
+export function saveResumeText(text) {
+  try { localStorage.setItem(KEY_RESUME_TEXT, text); } catch (e) {}
+}
+export function loadResumeText() {
+  try { return localStorage.getItem(KEY_RESUME_TEXT) || ''; } catch (e) { return ''; }
+}
+export function saveResumeName(name) {
+  try { localStorage.setItem(KEY_RESUME_NAME, name); } catch (e) {}
+}
+export function loadResumeName() {
+  try { return localStorage.getItem(KEY_RESUME_NAME) || ''; } catch (e) { return ''; }
+}
+export function saveFitScores(scores) {
+  try { localStorage.setItem(KEY_FIT_SCORES, JSON.stringify(scores)); } catch (e) {}
+}
+export function loadFitScores() {
+  try {
+    const raw = localStorage.getItem(KEY_FIT_SCORES);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return {}; }
 }

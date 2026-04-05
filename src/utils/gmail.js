@@ -1,95 +1,48 @@
 import { COMPANY_DOMAINS } from '../data/applications.js';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const GMAIL_MCP_URL = 'https://gmail.mcp.claude.com/mcp';
 
 function getApiKey() {
   return import.meta.env.VITE_ANTHROPIC_API_KEY || '';
 }
 
-function getMCPBase() {
-  return import.meta.env.VITE_MCP_BASE_URL || 'http://localhost:3100';
-}
+// ── Core: call Claude with Gmail MCP access ────────────────────────────────
 
-async function queryMCPGmail(domains, daysBack = 60) {
-  const domainList = Array.isArray(domains) ? domains : [domains];
-  const fromQuery = domainList.map((d) => `from:${d}`).join(' OR ');
-  const query = `(${fromQuery}) newer_than:${daysBack}d`;
+async function callClaudeWithGmail(prompt, maxTokens = 2048) {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error('No Anthropic API key configured');
 
-  const res = await fetch(`${getMCPBase()}/gmail/search`, {
+  const res = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, maxResults: 10 }),
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'mcp-client-2025-04-04',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      mcp_servers: [
+        { type: 'url', url: GMAIL_MCP_URL, name: 'gmail' },
+      ],
+      messages: [{ role: 'user', content: prompt }],
+    }),
   });
 
-  if (!res.ok) throw new Error(`MCP server error: ${res.status}`);
-  return res.json();
-}
-
-function buildClassificationPrompt(emails, companyName, role) {
-  const emailList = emails
-    .map(
-      (e, i) =>
-        `[${i}] From: ${e.from}\nSubject: ${e.subject}\nDate: ${e.date}\nSnippet: ${e.snippet}`
-    )
-    .join('\n\n');
-
-  return `You are analyzing emails related to a job application at ${companyName} for the role: ${role}.
-
-Classify each email. Return ONLY a JSON array, no other text:
-[{"index": 0, "type": "reply|invite|assessment|rejection|offer|other", "summary": "one-line description"}]
-
-Types:
-- reply: general response from company
-- invite: interview or call invitation
-- assessment: test, assessment, or exercise
-- rejection: rejection or no longer considering
-- offer: job offer or terms
-- other: everything else
-
-Emails:
-${emailList}`;
-}
-
-async function classifyEmails(emails, companyName, role) {
-  const apiKey = getApiKey();
-  if (!apiKey) return emails.map((e) => ({ ...e, emailType: 'other', summary: e.snippet }));
-
-  try {
-    const res = await fetch(ANTHROPIC_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
-        messages: [{ role: 'user', content: buildClassificationPrompt(emails, companyName, role) }],
-      }),
-    });
-
-    if (!res.ok) return emails.map((e) => ({ ...e, emailType: 'other', summary: e.snippet }));
-
-    const data = await res.json();
-    const text = data.content?.[0]?.text || '[]';
-
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return emails.map((e) => ({ ...e, emailType: 'other', summary: e.snippet }));
-
-    const classifications = JSON.parse(jsonMatch[0]);
-    return emails.map((email, i) => {
-      const cls = classifications.find((c) => c.index === i);
-      return {
-        ...email,
-        emailType: cls?.type || 'other',
-        summary: cls?.summary || email.snippet,
-      };
-    });
-  } catch {
-    return emails.map((e) => ({ ...e, emailType: 'other', summary: e.snippet }));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error ${res.status}`);
   }
+
+  const data = await res.json();
+  // Get final text content (last text block after any tool use)
+  const textBlocks = (data.content || []).filter((b) => b.type === 'text');
+  return textBlocks[textBlocks.length - 1]?.text || '';
 }
+
+// ── Sync a single known application ──────────────────────────────────────
 
 export async function fetchGmailForApp(app) {
   const domains = COMPANY_DOMAINS[app.company];
@@ -97,158 +50,122 @@ export async function fetchGmailForApp(app) {
     return { appId: app.id, threads: [], hasNewActivity: false };
   }
 
-  let rawEmails;
+  const fromList = domains.map((d) => `from:${d}`).join(' OR ');
+  const prompt = `Search Gmail for emails matching: (${fromList}) after:2026/2/1
+
+For this job application:
+- Company: ${app.company}
+- Role: ${app.role}
+
+Find the most recent relevant emails and return a JSON array (max 5 emails):
+[{
+  "id": "gmail_message_id",
+  "subject": "email subject",
+  "from": "sender@domain.com",
+  "date": "YYYY-MM-DD",
+  "snippet": "first ~150 chars of email body",
+  "emailType": "reply|invite|assessment|rejection|offer|other",
+  "gmailUrl": "https://mail.google.com/mail/u/0/#inbox/MESSAGE_ID"
+}]
+
+Return ONLY the JSON array. If no emails found, return [].`;
+
   try {
-    rawEmails = await queryMCPGmail(domains);
+    const text = await callClaudeWithGmail(prompt);
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return { appId: app.id, threads: [], hasNewActivity: false };
+
+    const threads = JSON.parse(jsonMatch[0]);
+    const existingIds = new Set((app.gmailThreads || []).map((t) => t.id));
+    const hasNewActivity = threads.some((t) => t.id && !existingIds.has(t.id));
+
+    return { appId: app.id, threads, hasNewActivity };
   } catch {
     return { appId: app.id, threads: [], hasNewActivity: false, error: true };
   }
-
-  if (!rawEmails || rawEmails.length === 0) {
-    return { appId: app.id, threads: [], hasNewActivity: false };
-  }
-
-  const classified = await classifyEmails(rawEmails, app.company, app.role);
-
-  const existingIds = new Set((app.gmailThreads || []).map((t) => t.id));
-  const hasNewActivity = classified.some((e) => !existingIds.has(e.id));
-
-  return { appId: app.id, threads: classified.slice(0, 10), hasNewActivity };
 }
+
+// ── Sync all known applications ────────────────────────────────────────────
 
 export async function syncAllApplications(applications) {
   const toSync = applications.filter((a) => a.stage !== 'Closed');
-  const results = await Promise.allSettled(toSync.map((app) => fetchGmailForApp(app)));
-
-  return results
-    .filter((r) => r.status === 'fulfilled')
-    .map((r) => r.value);
-}
-
-function buildNewJobDetectionPrompt(emails) {
-  const emailList = emails
-    .map(
-      (e, i) =>
-        `[${i}] From: ${e.from}\nSubject: ${e.subject}\nDate: ${e.date}\nSnippet: ${e.snippet}`
-    )
-    .join('\n\n');
-
-  return `You are helping track job applications. These emails appear to be job-related. Extract application info from each email.
-
-Return ONLY a JSON array, no other text:
-[{"index": 0, "company": "Company Name", "role": "Role Title", "status": "Applied|Rejected|Under Review|Active", "appliedAt": "YYYY-MM-DD or null", "isJobRelated": true}]
-
-If an email is NOT job-application related, set isJobRelated: false.
-
-Emails:
-${emailList}`;
-}
-
-export async function detectNewApplications(existingApps, mcpAvailable = true) {
-  if (!mcpAvailable) return [];
-  const apiKey = getApiKey();
-  if (!apiKey) return [];
-
-  const knownDomains = new Set(
-    Object.values(COMPANY_DOMAINS).flat().map((d) => d.toLowerCase())
+  const results = await Promise.allSettled(
+    toSync.map((app) => fetchGmailForApp(app))
   );
-  const knownCompanies = new Set(existingApps.map((a) => a.company.toLowerCase()));
+  return results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+}
 
-  const jobKeywords = [
-    'application received',
-    'thank you for applying',
-    'your application',
-    'interview invitation',
-    'we received your application',
-    'application confirmation',
-    'next steps',
-  ];
+// ── Auto-detect NEW applications from Gmail ────────────────────────────────
 
-  let candidateEmails = [];
+export async function detectNewApplications(existingApps) {
+  const knownCompanies = existingApps
+    .map((a) => a.company.toLowerCase())
+    .join(', ');
+
+  const prompt = `Search Gmail for job application confirmation emails received in the last 90 days.
+
+I'm tracking job applications. These companies are ALREADY tracked — skip them:
+${knownCompanies}
+
+Search for emails with subjects like:
+- "thank you for applying"
+- "application received" / "application confirmation"
+- "thank you for your application"
+- "we received your application"
+- "complete your application" (incomplete/abandoned applications)
+- "action required" related to job applications
+
+For each NEW company (not in the skip list above), extract:
+[{
+  "company": "Company Name",
+  "role": "Exact Job Title from email",
+  "status": "Applied|Incomplete|Under Review",
+  "appliedAt": "YYYY-MM-DD",
+  "emailFrom": "sender@domain.com",
+  "emailSubject": "subject line",
+  "snippet": "key detail from email body",
+  "priority": "HIGH|MEDIUM|LOW",
+  "isIncomplete": false
+}]
+
+Priority guide: HIGH = top consulting/finance/tech firms, MEDIUM = mid-tier, LOW = others.
+Set isIncomplete = true if the email says the application was started but not finished.
+
+Return ONLY the JSON array. If nothing new found, return [].`;
+
   try {
-    for (const keyword of jobKeywords.slice(0, 3)) {
-      const res = await fetch(`${getMCPBase()}/gmail/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: `subject:"${keyword}" newer_than:60d`, maxResults: 5 }),
-      });
-      if (res.ok) {
-        const emails = await res.json();
-        candidateEmails.push(...(emails || []));
-      }
-    }
-  } catch {
-    return [];
-  }
-
-  if (candidateEmails.length === 0) return [];
-
-  // Deduplicate by id
-  const seen = new Set();
-  candidateEmails = candidateEmails.filter((e) => {
-    if (seen.has(e.id)) return false;
-    seen.add(e.id);
-    return true;
-  });
-
-  // Filter out known domains
-  const unknown = candidateEmails.filter((e) => {
-    const fromDomain = (e.from || '').match(/@([^>]+)/)?.[1]?.toLowerCase();
-    if (!fromDomain) return false;
-    const isKnown = [...knownDomains].some((d) => fromDomain.endsWith(d));
-    return !isKnown;
-  });
-
-  if (unknown.length === 0) return [];
-
-  // Classify with Claude
-  try {
-    const res = await fetch(ANTHROPIC_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: buildNewJobDetectionPrompt(unknown) }],
-      }),
-    });
-
-    if (!res.ok) return [];
-
-    const data = await res.json();
-    const text = data.content?.[0]?.text || '[]';
+    const text = await callClaudeWithGmail(prompt, 3000);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    const suggestions = parsed
-      .filter((p) => p.isJobRelated && p.company)
-      .filter((p) => !knownCompanies.has(p.company.toLowerCase()))
-      .map((p, i) => ({
-        id: `suggested-${Date.now()}-${i}`,
-        company: p.company,
-        role: p.role || 'Unknown Role',
-        stage: 'Applied',
-        priority: 'LOW',
-        status: p.status || 'Under Review',
+    const found = JSON.parse(jsonMatch[0]);
+    const knownSet = new Set(existingApps.map((a) => a.company.toLowerCase()));
+
+    return found
+      .filter((f) => f.company && !knownSet.has(f.company.toLowerCase()))
+      .map((f, i) => ({
+        id: `auto-${Date.now()}-${i}`,
+        company: f.company,
+        role: f.role || 'Unknown Role',
+        stage: f.isIncomplete ? 'Targeting' : 'Applied',
+        priority: f.priority || 'MEDIUM',
+        status: f.isIncomplete ? 'Incomplete' : (f.status || 'Under Review'),
         deadline: null,
-        appliedAt: p.appliedAt || new Date().toISOString().split('T')[0],
-        stageEnteredAt: new Date().toISOString().split('T')[0],
+        appliedAt: f.appliedAt || new Date().toISOString().split('T')[0],
+        stageEnteredAt: f.appliedAt || new Date().toISOString().split('T')[0],
         contacts: [],
-        timeline: [{ date: new Date().toISOString().split('T')[0], type: 'email', note: 'Detected from Gmail — verify details' }],
-        notes: 'Auto-detected from Gmail. Please verify and update details.',
+        timeline: [{
+          date: f.appliedAt || new Date().toISOString().split('T')[0],
+          type: f.isIncomplete ? 'note' : 'applied',
+          note: `Auto-detected via Gmail scan — ${f.snippet || f.emailSubject || 'email received'}`,
+        }],
+        notes: `Auto-detected from Gmail. From: ${f.emailFrom || 'unknown'}. Subject: "${f.emailSubject || ''}"`,
         documents: [],
         gmailThreads: [],
         hasNewActivity: true,
         source: 'gmail-detected',
-        emailSnippet: unknown[p.index]?.snippet || '',
+        jobDescription: '',
       }));
-
-    return suggestions;
   } catch {
     return [];
   }

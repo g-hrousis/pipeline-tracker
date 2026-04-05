@@ -17,8 +17,8 @@ function timeSince(isoString) {
 }
 
 export default function Header() {
-  const { state, dispatch, runGmailSync } = useApp();
-  const { applications, view, isSyncing, gmailSyncedAt } = state;
+  const { state, dispatch, runGmailSync, setShowResumeModal } = useApp();
+  const { applications, view, isSyncing, gmailSyncedAt, resumeText, isScoring } = state;
 
   const active = applications.filter((a) => a.stage !== 'Closed');
   const grade = computeHealthGrade(active);
@@ -52,6 +52,19 @@ export default function Header() {
           ⚠ {urgentCount} deadline{urgentCount > 1 ? 's' : ''}
         </span>
       )}
+
+      <button
+        className={`resume-btn${resumeText ? ' resume-btn--loaded' : ''}`}
+        onClick={() => setShowResumeModal(true)}
+        disabled={isScoring}
+        title={resumeText ? 'Resume loaded — click to update' : 'Upload resume for fit scoring'}
+      >
+        {isScoring ? (
+          <><span className="sync-btn__spinner" /> Scoring…</>
+        ) : (
+          <>{resumeText ? <span className="resume-btn__dot resume-btn__dot--active" /> : <span className="resume-btn__dot" />} Resume</>
+        )}
+      </button>
 
       <button
         className="sync-btn"

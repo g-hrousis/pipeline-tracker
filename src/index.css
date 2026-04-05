@@ -1335,3 +1335,303 @@ select option { background: var(--card); }
   .fab { bottom: 20px; right: 16px; }
   .conversion-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ============================================================
+   RESUME BUTTON (Header)
+   ============================================================ */
+
+.resume-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 30px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+.resume-btn:hover { border-color: var(--blue); color: var(--text-primary); }
+.resume-btn--loaded { border-color: rgba(16, 185, 129, 0.4); color: var(--green); }
+.resume-btn--loaded:hover { border-color: var(--green); }
+.resume-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.resume-btn__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background var(--transition);
+}
+.resume-btn__dot--active {
+  background: var(--green);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+
+/* ============================================================
+   RESUME MODAL
+   ============================================================ */
+
+.resume-modal { max-width: 560px; }
+
+.resume-modal__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.resume-upload-zone {
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--text-muted);
+  font-size: 12px;
+  background: var(--surface);
+}
+.resume-upload-zone:hover { border-color: var(--blue); background: rgba(59, 130, 246, 0.04); }
+.resume-upload-zone--dragging {
+  border-color: var(--blue);
+  background: rgba(59, 130, 246, 0.08);
+  border-style: solid;
+}
+
+.resume-upload-zone__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.resume-upload-zone__arrow {
+  font-size: 20px;
+  color: var(--text-muted);
+}
+.resume-upload-zone__loaded {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.resume-upload-zone__filename {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.resume-upload-zone__wordcount {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+}
+.resume-upload-zone__hint {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.resume-textarea { min-height: 200px; resize: vertical; }
+
+.resume-info-box {
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.resume-info-box__title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--blue);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.resume-info-box__list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.resume-info-box__list li {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.resume-modal__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.resume-modal__btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  border: 1px solid transparent;
+}
+.resume-modal__btn--save {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+.resume-modal__btn--save:hover:not(:disabled) { opacity: 0.88; }
+.resume-modal__btn--save:disabled { opacity: 0.5; cursor: not-allowed; }
+.resume-modal__btn--clear {
+  background: transparent;
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+.resume-modal__btn--clear:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--red);
+}
+
+/* ============================================================
+   KANBAN CARD — FIT SCORE PILL
+   ============================================================ */
+
+.kanban-card__fit-score {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  letter-spacing: 0.04em;
+}
+.kanban-card__fit-score--green {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.kanban-card__fit-score--amber {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.kanban-card__fit-score--red {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--red);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+/* ============================================================
+   CARD MODAL — FIT SCORE SECTION
+   ============================================================ */
+
+.fit-score-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.fit-score-badge--green { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+.fit-score-badge--amber { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
+.fit-score-badge--red   { background: rgba(239,68,68,0.12); color: var(--red);   border: 1px solid rgba(239,68,68,0.25); }
+
+.fit-score-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fit-score-summary {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  font-style: italic;
+}
+
+.fit-score-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.fit-score-col-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.fit-score-col-label--green { color: var(--green); }
+.fit-score-col-label--red   { color: var(--red); }
+
+.fit-score-list {
+  margin: 0;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fit-score-list li {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.fit-score-list--gaps li { color: var(--text-muted); }
+
+.fit-score-recommendation {
+  font-size: 11px;
+  color: var(--blue);
+  padding: 8px 10px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  border-radius: calc(var(--radius) - 2px);
+  line-height: 1.5;
+}
+
+.fit-score-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 10px 0;
+  font-style: italic;
+}
+
+.rescore-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 6px 14px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.rescore-btn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: var(--blue);
+}
+.rescore-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

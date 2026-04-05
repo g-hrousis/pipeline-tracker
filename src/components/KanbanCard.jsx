@@ -11,8 +11,11 @@ function getInitials(company) {
     .join('');
 }
 
+import { getFitScoreColor } from '../utils/fitScoring.js';
+
 export default function KanbanCard({ app, isOverlay = false }) {
-  const { dispatch } = useApp();
+  const { dispatch, state } = useApp();
+  const fitScore = state.fitScores?.[app.id];
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: app.id,
@@ -60,6 +63,14 @@ export default function KanbanCard({ app, isOverlay = false }) {
         <span className={`kanban-card__score kanban-card__score--${scoreColor}`}>
           {score}/10
         </span>
+        {fitScore && (
+          <span
+            className={`kanban-card__fit-score kanban-card__fit-score--${getFitScoreColor(fitScore.score)}`}
+            title={fitScore.summary || 'Resume fit score'}
+          >
+            ★ {fitScore.score}
+          </span>
+        )}
       </div>
 
       <div className={`kanban-card__next-action${isUrgent ? ' kanban-card__next-action--urgent' : ''}`}>
