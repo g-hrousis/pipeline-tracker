@@ -420,9 +420,9 @@ export default function App() {
 
   const addToast = useCallback((toast) => dispatch({ type: 'ADD_TOAST', payload: toast }), []);
 
-  const connectGmail = useCallback(() => {
+  const connectGmail = useCallback(async () => {
     try {
-      startGmailOAuth(); // redirects — page will come back with ?code=
+      await startGmailOAuth(); // generates PKCE pair then redirects — page returns with ?code=
     } catch (err) {
       dispatch({
         type: 'ADD_TOAST',
